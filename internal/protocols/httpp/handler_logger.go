@@ -12,7 +12,7 @@ import (
 type loggerWriter struct {
 	w      http.ResponseWriter
 	status int
-	buf    bytes.Buffer
+	size   int
 }
 
 func (w *loggerWriter) Header() http.Header {
@@ -23,7 +23,7 @@ func (w *loggerWriter) Write(b []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	w.buf.Write(b)
+	w.size += len(b)
 	return w.w.Write(b)
 }
 
@@ -37,15 +37,15 @@ func (w *loggerWriter) dump() string {
 	fmt.Fprintf(&buf, "%s %d %s\n", "HTTP/1.1", w.status, http.StatusText(w.status))
 	w.w.Header().Write(&buf) //nolint:errcheck
 	buf.Write([]byte("\n"))
-	if w.buf.Len() > 0 {
-		fmt.Fprintf(&buf, "(body of %d bytes)", w.buf.Len())
+	if w.size > 0 {
+		fmt.Fprintf(&buf, "(body of %d bytes)", w.size)
 	}
 	return buf.String()
 }
 
 // log requests and responses.
 type handlerLogger struct {
-	http.Handler
+	h   http.Handler
 	log logger.Writer
 }
 
@@ -55,7 +55,7 @@ func (h *handlerLogger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	logw := &loggerWriter{w: w}
 
-	h.Handler.ServeHTTP(logw, r)
+	h.h.ServeHTTP(logw, r)
 
 	h.log.Log(logger.Debug, "[conn %v] [s->c] %s", r.RemoteAddr, logw.dump())
 }

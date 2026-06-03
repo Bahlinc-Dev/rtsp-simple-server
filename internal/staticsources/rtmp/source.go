@@ -8,25 +8,34 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
+	"github.com/bluenviron/gortmplib"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/packetdumper"
 	"github.com/bluenviron/mediamtx/internal/protocols/rtmp"
-	"github.com/bluenviron/mediamtx/internal/protocols/tls"
+	ptls "github.com/bluenviron/mediamtx/internal/protocols/tls"
 	"github.com/bluenviron/mediamtx/internal/stream"
 )
 
+type parent interface {
+	logger.Writer
+	SetReady(req defs.PathSourceStaticSetReadyReq) defs.PathSourceStaticSetReadyRes
+	SetNotReady(req defs.PathSourceStaticSetNotReadyReq)
+}
+
 // Source is a RTMP static source.
 type Source struct {
+	DumpPackets  bool
 	ReadTimeout  conf.Duration
 	WriteTimeout conf.Duration
-	Parent       defs.StaticSourceParent
+	Parent       parent
 }
 
 // Log implements logger.Writer.
-func (s *Source) Log(level logger.Level, format string, args ...interface{}) {
+func (s *Source) Log(level logger.Level, format string, args ...any) {
 	s.Parent.Log(level, "[RTMP source] "+format, args...)
 }
 
@@ -49,104 +58,106 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		}
 	}
 
-	ctx, ctxCancel := context.WithCancel(context.Background())
+	connectCtx, connectCtxCancel := context.WithTimeout(params.Context, time.Duration(s.ReadTimeout))
+
+	conn := &gortmplib.Client{
+		URL:     u,
+		Publish: false,
+	}
+
+	tlsConfig := ptls.MakeConfig(params.Conf.SourceFingerprint)
+
+	if s.DumpPackets {
+		conn.DialContext = (&packetdumper.DialContext{
+			Prefix: u.Scheme + "_source_conn",
+		}).Do
+
+		conn.DialTLSContext = (&packetdumper.DialTLSContext{
+			DialContext: conn.DialContext,
+			TLSConfig:   tlsConfig,
+		}).Do
+	} else {
+		conn.TLSConfig = tlsConfig
+	}
+
+	err = conn.Initialize(connectCtx)
+	connectCtxCancel()
+	if err != nil {
+		return err
+	}
 
 	readDone := make(chan error)
 	go func() {
-		readDone <- s.runReader(ctx, u, params.Conf.SourceFingerprint)
+		readDone <- s.runReader(conn)
 	}()
 
 	for {
 		select {
-		case err := <-readDone:
-			ctxCancel()
+		case err = <-readDone:
+			conn.Close()
 			return err
 
 		case <-params.ReloadConf:
 
 		case <-params.Context.Done():
-			ctxCancel()
+			conn.Close()
 			<-readDone
 			return nil
 		}
 	}
 }
 
-func (s *Source) runReader(ctx context.Context, u *url.URL, fingerprint string) error {
-	connectCtx, connectCtxCancel := context.WithTimeout(ctx, time.Duration(s.ReadTimeout))
-	conn := &rtmp.Client{
-		URL:       u,
-		TLSConfig: tls.ConfigForFingerprint(fingerprint),
-		Publish:   false,
-	}
-	err := conn.Initialize(connectCtx)
-	connectCtxCancel()
-	if err != nil {
-		return err
-	}
+func (s *Source) runReader(conn *gortmplib.Client) error {
+	conn.NetConn().SetReadDeadline(time.Now().Add(time.Duration(s.ReadTimeout)))
+	conn.NetConn().SetWriteDeadline(time.Now().Add(time.Duration(s.WriteTimeout)))
 
-	r := &rtmp.Reader{
+	r := &gortmplib.Reader{
 		Conn: conn,
 	}
-	err = r.Initialize()
+	err := r.Initialize()
 	if err != nil {
-		conn.Close()
 		return err
 	}
 
-	var stream *stream.Stream
+	var subStream *stream.SubStream
 
-	medias, err := rtmp.ToStream(r, &stream)
+	medias, err := rtmp.ToStream(r, &subStream)
 	if err != nil {
-		conn.Close()
 		return err
 	}
 
 	if len(medias) == 0 {
-		conn.Close()
 		return fmt.Errorf("no supported tracks found")
 	}
 
 	res := s.Parent.SetReady(defs.PathSourceStaticSetReadyReq{
-		Desc:               &description.Session{Medias: medias},
-		GenerateRTPPackets: true,
+		Desc:          &description.Session{Medias: medias},
+		UseRTPPackets: false,
+		ReplaceNTP:    true,
 	})
 	if res.Err != nil {
-		conn.Close()
 		return res.Err
 	}
 
 	defer s.Parent.SetNotReady(defs.PathSourceStaticSetNotReadyReq{})
 
-	stream = res.Stream
+	subStream = res.SubStream
 
-	readerErr := make(chan error)
-	go func() {
-		for {
-			conn.NetConn().SetReadDeadline(time.Now().Add(time.Duration(s.ReadTimeout)))
-			err := r.Read()
-			if err != nil {
-				readerErr <- err
-				return
-			}
+	conn.NetConn().SetWriteDeadline(time.Time{})
+
+	for {
+		conn.NetConn().SetReadDeadline(time.Now().Add(time.Duration(s.ReadTimeout)))
+		err = r.Read()
+		if err != nil {
+			return err
 		}
-	}()
-
-	select {
-	case <-ctx.Done():
-		conn.Close()
-		<-readerErr
-		return fmt.Errorf("terminated")
-
-	case err := <-readerErr:
-		return err
 	}
 }
 
 // APISourceDescribe implements StaticSource.
-func (*Source) APISourceDescribe() defs.APIPathSourceOrReader {
-	return defs.APIPathSourceOrReader{
-		Type: "rtmpSource",
+func (*Source) APISourceDescribe() *defs.APIPathSource {
+	return &defs.APIPathSource{
+		Type: defs.APIPathSourceTypeRTMPSource,
 		ID:   "",
 	}
 }

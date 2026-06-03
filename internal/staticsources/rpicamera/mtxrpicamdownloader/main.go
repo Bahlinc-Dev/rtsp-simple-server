@@ -16,6 +16,10 @@ import (
 	"strings"
 )
 
+const (
+	maxInboundRPICameraSize = 10 * 1024 * 1024
+)
+
 func dumpTar(src io.Reader) error {
 	uncompressed, err := gzip.NewReader(src)
 	if err != nil {
@@ -25,7 +29,8 @@ func dumpTar(src io.Reader) error {
 	tr := tar.NewReader(uncompressed)
 
 	for {
-		header, err := tr.Next()
+		var header *tar.Header
+		header, err = tr.Next()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
@@ -41,7 +46,8 @@ func dumpTar(src io.Reader) error {
 			}
 
 		case tar.TypeReg:
-			f, err := os.OpenFile(header.Name, os.O_WRONLY|os.O_CREATE, header.FileInfo().Mode())
+			var f *os.File
+			f, err = os.OpenFile(header.Name, os.O_WRONLY|os.O_CREATE, header.FileInfo().Mode())
 			if err != nil {
 				return err
 			}
@@ -73,7 +79,7 @@ func doSingle(version string, f string) error {
 		return fmt.Errorf("bad status code: %v", res.StatusCode)
 	}
 
-	buf, err := io.ReadAll(res.Body)
+	buf, err := io.ReadAll(&customLimitReader{res.Body, maxInboundRPICameraSize})
 	if err != nil {
 		return err
 	}

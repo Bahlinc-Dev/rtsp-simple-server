@@ -1,11 +1,10 @@
 package webrtc
 
 import (
-	"context"
 	"testing"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/format"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/stream"
 	"github.com/bluenviron/mediamtx/internal/test"
@@ -16,7 +15,7 @@ import (
 
 func TestToStreamNoSupportedCodecs(t *testing.T) {
 	pc := &PeerConnection{}
-	_, err := ToStream(pc, nil)
+	_, err := ToStream(pc, &conf.Path{}, nil, nil)
 	require.Equal(t, errNoSupportedCodecsTo, err)
 }
 
@@ -100,7 +99,7 @@ var toFromStreamCases = []struct {
 	{
 		"opus multichannel",
 		&format.Opus{
-			PayloadTyp:   112,
+			PayloadTyp:   96,
 			ChannelCount: 6,
 		},
 		webrtc.RTPCodecCapability{
@@ -117,7 +116,7 @@ var toFromStreamCases = []struct {
 	{
 		"opus stereo",
 		&format.Opus{
-			PayloadTyp:   111,
+			PayloadTyp:   96,
 			ChannelCount: 2,
 		},
 		webrtc.RTPCodecCapability{
@@ -134,7 +133,7 @@ var toFromStreamCases = []struct {
 	{
 		"opus mono",
 		&format.Opus{
-			PayloadTyp:   111,
+			PayloadTyp:   96,
 			ChannelCount: 1,
 		},
 		webrtc.RTPCodecCapability{
@@ -206,7 +205,7 @@ var toFromStreamCases = []struct {
 			Channels:  2,
 		},
 		&format.G711{
-			PayloadTyp:   119,
+			PayloadTyp:   96,
 			SampleRate:   8000,
 			ChannelCount: 2,
 		},
@@ -226,7 +225,7 @@ var toFromStreamCases = []struct {
 		},
 		&format.G711{
 			MULaw:        true,
-			PayloadTyp:   118,
+			PayloadTyp:   96,
 			SampleRate:   8000,
 			ChannelCount: 2,
 		},
@@ -336,12 +335,10 @@ func TestToStream(t *testing.T) {
 	for _, ca := range toFromStreamCases {
 		t.Run(ca.name, func(t *testing.T) {
 			pc1 := &PeerConnection{
-				LocalRandomUDP:     true,
-				IPsFromInterfaces:  true,
-				HandshakeTimeout:   conf.Duration(10 * time.Second),
-				TrackGatherTimeout: conf.Duration(2 * time.Second),
-				Publish:            true,
-				OutgoingTracks: []*OutgoingTrack{{
+				LocalRandomUDP:    true,
+				IPsFromInterfaces: true,
+				Publish:           true,
+				OutboundTracks: []*OutboundTrack{{
 					Caps: ca.webrtcCaps,
 				}},
 				Log: test.NilLogger,
@@ -351,21 +348,19 @@ func TestToStream(t *testing.T) {
 			defer pc1.Close()
 
 			pc2 := &PeerConnection{
-				LocalRandomUDP:     true,
-				IPsFromInterfaces:  true,
-				HandshakeTimeout:   conf.Duration(10 * time.Second),
-				TrackGatherTimeout: conf.Duration(2 * time.Second),
-				Publish:            false,
-				Log:                test.NilLogger,
+				LocalRandomUDP:    true,
+				IPsFromInterfaces: true,
+				Publish:           false,
+				Log:               test.NilLogger,
 			}
 			err = pc2.Start()
 			require.NoError(t, err)
 			defer pc2.Close()
 
-			offer, err := pc1.CreatePartialOffer()
+			offer, err := pc1.CreatePartialOffer(false)
 			require.NoError(t, err)
 
-			answer, err := pc2.CreateFullAnswer(context.Background(), offer)
+			answer, err := pc2.CreateFullAnswer(offer, false)
 			require.NoError(t, err)
 
 			err = pc1.SetAnswer(answer)
@@ -384,13 +379,13 @@ func TestToStream(t *testing.T) {
 				}
 			}()
 
-			err = pc1.WaitUntilConnected(context.Background())
+			err = pc1.WaitUntilConnected(10 * time.Second)
 			require.NoError(t, err)
 
-			err = pc2.WaitUntilConnected(context.Background())
+			err = pc2.WaitUntilConnected(10 * time.Second)
 			require.NoError(t, err)
 
-			err = pc1.OutgoingTracks[0].WriteRTP(&rtp.Packet{
+			err = pc1.OutboundTracks[0].WriteRTP(&rtp.Packet{
 				Header: rtp.Header{
 					Version:        2,
 					Marker:         true,
@@ -403,11 +398,11 @@ func TestToStream(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			err = pc2.GatherIncomingTracks(context.Background())
+			err = pc2.GatherInboundTracks(2 * time.Second)
 			require.NoError(t, err)
 
-			var stream *stream.Stream
-			medias, err := ToStream(pc2, &stream)
+			var subStream *stream.SubStream
+			medias, err := ToStream(pc2, &conf.Path{}, &subStream, nil)
 			require.NoError(t, err)
 			require.Equal(t, ca.out, medias[0].Formats[0])
 		})

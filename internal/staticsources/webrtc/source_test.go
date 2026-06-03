@@ -26,7 +26,7 @@ func whipOffer(body []byte) *pwebrtc.SessionDescription {
 }
 
 func TestSource(t *testing.T) {
-	outgoingTracks := []*webrtc.OutgoingTrack{{
+	outboundTracks := []*webrtc.OutboundTrack{{
 		Caps: pwebrtc.RTPCodecCapability{
 			MimeType:    "audio/opus",
 			ClockRate:   48000,
@@ -36,14 +36,11 @@ func TestSource(t *testing.T) {
 	}}
 
 	pc := &webrtc.PeerConnection{
-		LocalRandomUDP:     true,
-		IPsFromInterfaces:  true,
-		Publish:            true,
-		HandshakeTimeout:   conf.Duration(10 * time.Second),
-		TrackGatherTimeout: conf.Duration(2 * time.Second),
-		STUNGatherTimeout:  conf.Duration(5 * time.Second),
-		OutgoingTracks:     outgoingTracks,
-		Log:                test.NilLogger,
+		LocalRandomUDP:    true,
+		IPsFromInterfaces: true,
+		Publish:           true,
+		OutboundTracks:    outboundTracks,
+		Log:               test.NilLogger,
 	}
 	err := pc.Start()
 	require.NoError(t, err)
@@ -71,21 +68,20 @@ func TestSource(t *testing.T) {
 				require.NoError(t, err2)
 				offer := whipOffer(body)
 
-				answer, err2 := pc.CreateFullAnswer(context.Background(), offer)
+				answer, err2 := pc.CreateFullAnswer(offer, false)
 				require.NoError(t, err2)
 
 				w.Header().Set("Content-Type", "application/sdp")
-				w.Header().Set("Accept-Patch", "application/trickle-ice-sdpfrag")
 				w.Header().Set("ETag", "test_etag")
 				w.Header().Set("Location", "/my/resource/sessionid")
 				w.WriteHeader(http.StatusCreated)
 				w.Write([]byte(answer.SDP))
 
 				go func() {
-					err3 := pc.WaitUntilConnected(context.Background())
+					err3 := pc.WaitUntilConnected(10 * time.Second)
 					require.NoError(t, err3)
 
-					err3 = outgoingTracks[0].WriteRTP(&rtp.Packet{
+					err3 = outboundTracks[0].WriteRTP(&rtp.Packet{
 						Header: rtp.Header{
 							Version:        2,
 							Marker:         true,
@@ -123,17 +119,35 @@ func TestSource(t *testing.T) {
 	go httpServ.Serve(ln)
 	defer httpServ.Shutdown(context.Background())
 
-	te := test.NewSourceTester(
-		func(p defs.StaticSourceParent) defs.StaticSource {
-			return &Source{
-				ReadTimeout: conf.Duration(10 * time.Second),
-				Parent:      p,
-			}
-		},
-		"whep://localhost:9003/my/resource",
-		&conf.Path{},
-	)
-	defer te.Close()
+	p := &test.StaticSourceParent{}
+	p.Initialize()
+	defer p.Close()
 
-	<-te.Unit
+	so := &Source{
+		ReadTimeout: conf.Duration(10 * time.Second),
+		Parent:      p,
+	}
+
+	done := make(chan struct{})
+	defer func() { <-done }()
+
+	ctx, ctxCancel := context.WithCancel(context.Background())
+	defer ctxCancel()
+
+	reloadConf := make(chan *conf.Path)
+
+	go func() {
+		so.Run(defs.StaticSourceRunParams{ //nolint:errcheck
+			Context:        ctx,
+			ResolvedSource: "whep://localhost:9003/my/resource",
+			Conf:           &conf.Path{},
+			ReloadConf:     reloadConf,
+		})
+		close(done)
+	}()
+
+	<-p.Unit
+
+	// the source must be listening on ReloadConf
+	reloadConf <- nil
 }

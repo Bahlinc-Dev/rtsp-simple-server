@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/protocols/webrtc"
 	"github.com/bluenviron/mediamtx/internal/test"
 	"github.com/pion/rtp"
@@ -25,7 +24,7 @@ func whipOffer(body []byte) *pwebrtc.SessionDescription {
 	}
 }
 
-func gatherCodecs(tracks []*webrtc.IncomingTrack) []pwebrtc.RTPCodecParameters {
+func gatherCodecs(tracks []*webrtc.InboundTrack) []pwebrtc.RTPCodecParameters {
 	codecs := make([]pwebrtc.RTPCodecParameters, len(tracks))
 	for i, track := range tracks {
 		codecs[i] = track.Codec()
@@ -39,11 +38,11 @@ func TestClientRead(t *testing.T) {
 		"video+audio",
 	} {
 		t.Run(ca, func(t *testing.T) {
-			var outgoingTracks []*webrtc.OutgoingTrack
+			var outboundTracks []*webrtc.OutboundTrack
 
 			switch ca {
 			case "audio":
-				outgoingTracks = []*webrtc.OutgoingTrack{{
+				outboundTracks = []*webrtc.OutboundTrack{{
 					Caps: pwebrtc.RTPCodecCapability{
 						MimeType:  "audio/opus",
 						ClockRate: 48000,
@@ -52,7 +51,7 @@ func TestClientRead(t *testing.T) {
 				}}
 
 			case "video+audio":
-				outgoingTracks = []*webrtc.OutgoingTrack{
+				outboundTracks = []*webrtc.OutboundTrack{
 					{
 						Caps: pwebrtc.RTPCodecCapability{
 							MimeType:  "video/H264",
@@ -70,14 +69,11 @@ func TestClientRead(t *testing.T) {
 			}
 
 			pc := &webrtc.PeerConnection{
-				LocalRandomUDP:     true,
-				IPsFromInterfaces:  true,
-				Publish:            true,
-				HandshakeTimeout:   conf.Duration(10 * time.Second),
-				TrackGatherTimeout: conf.Duration(2 * time.Second),
-				STUNGatherTimeout:  conf.Duration(5 * time.Second),
-				OutgoingTracks:     outgoingTracks,
-				Log:                test.NilLogger,
+				LocalRandomUDP:    true,
+				IPsFromInterfaces: true,
+				Publish:           true,
+				OutboundTracks:    outboundTracks,
+				Log:               test.NilLogger,
 			}
 			err := pc.Start()
 			require.NoError(t, err)
@@ -105,21 +101,22 @@ func TestClientRead(t *testing.T) {
 						require.NoError(t, err2)
 						offer := whipOffer(body)
 
-						answer, err2 := pc.CreateFullAnswer(context.Background(), offer)
+						require.NotContains(t, offer.SDP, "a=candidate:")
+
+						answer, err2 := pc.CreateFullAnswer(offer, false)
 						require.NoError(t, err2)
 
 						w.Header().Set("Content-Type", "application/sdp")
-						w.Header().Set("Accept-Patch", "application/trickle-ice-sdpfrag")
 						w.Header().Set("ETag", "test_etag")
 						w.Header().Set("Location", "/my/resource/sessionid")
 						w.WriteHeader(http.StatusCreated)
 						w.Write([]byte(answer.SDP))
 
 						go func() {
-							err3 := pc.WaitUntilConnected(context.Background())
+							err3 := pc.WaitUntilConnected(10 * time.Second)
 							require.NoError(t, err3)
 
-							for _, track := range outgoingTracks {
+							for _, track := range outboundTracks {
 								err3 = track.WriteRTP(&rtp.Packet{
 									Header: rtp.Header{
 										Version:        2,
@@ -171,7 +168,7 @@ func TestClientRead(t *testing.T) {
 			require.NoError(t, err)
 			defer cl.Close() //nolint:errcheck
 
-			codecs := gatherCodecs(cl.IncomingTracks())
+			codecs := gatherCodecs(cl.InboundTracks())
 
 			switch ca {
 			case "audio":
@@ -218,14 +215,14 @@ func TestClientRead(t *testing.T) {
 				}, codecs)
 			}
 
-			recv := make([]chan struct{}, len(outgoingTracks))
-			for i := range outgoingTracks {
+			recv := make([]chan struct{}, len(outboundTracks))
+			for i := range outboundTracks {
 				recv[i] = make(chan struct{})
 			}
 
-			for i, track := range cl.IncomingTracks() {
+			for i, track := range cl.InboundTracks() {
 				ci := i
-				track.OnPacketRTP = func(_ *rtp.Packet, _ time.Time) {
+				track.OnPacketRTP = func(_ *rtp.Packet) {
 					close(recv[ci])
 				}
 			}
@@ -243,12 +240,9 @@ func TestClientPublish(t *testing.T) {
 	for _, ca := range []string{"audio", "video+audio"} {
 		t.Run(ca, func(t *testing.T) {
 			pc := &webrtc.PeerConnection{
-				LocalRandomUDP:     true,
-				IPsFromInterfaces:  true,
-				HandshakeTimeout:   conf.Duration(10 * time.Second),
-				TrackGatherTimeout: conf.Duration(2 * time.Second),
-				STUNGatherTimeout:  conf.Duration(5 * time.Second),
-				Log:                test.NilLogger,
+				LocalRandomUDP:    true,
+				IPsFromInterfaces: true,
+				Log:               test.NilLogger,
 			}
 			err := pc.Start()
 			require.NoError(t, err)
@@ -277,24 +271,25 @@ func TestClientPublish(t *testing.T) {
 						require.NoError(t, err2)
 						offer := whipOffer(body)
 
-						answer, err2 := pc.CreateFullAnswer(context.Background(), offer)
+						require.NotContains(t, offer.SDP, "a=candidate:")
+
+						answer, err2 := pc.CreateFullAnswer(offer, false)
 						require.NoError(t, err2)
 
 						w.Header().Set("Content-Type", "application/sdp")
-						w.Header().Set("Accept-Patch", "application/trickle-ice-sdpfrag")
 						w.Header().Set("ETag", "test_etag")
 						w.Header().Set("Location", "/my/resource/sessionid")
 						w.WriteHeader(http.StatusCreated)
 						w.Write([]byte(answer.SDP))
 
 						go func() {
-							err3 := pc.WaitUntilConnected(context.Background())
+							err3 := pc.WaitUntilConnected(10 * time.Second)
 							require.NoError(t, err3)
 
-							err3 = pc.GatherIncomingTracks(context.Background())
+							err3 = pc.GatherInboundTracks(2 * time.Second)
 							require.NoError(t, err3)
 
-							codecs := gatherCodecs(pc.IncomingTracks())
+							codecs := gatherCodecs(pc.InboundTracks())
 
 							switch ca {
 							case "audio":
@@ -338,9 +333,9 @@ func TestClientPublish(t *testing.T) {
 								}, codecs)
 							}
 
-							for i, track := range pc.IncomingTracks() {
+							for i, track := range pc.InboundTracks() {
 								ci := i
-								track.OnPacketRTP = func(_ *rtp.Packet, _ time.Time) {
+								track.OnPacketRTP = func(_ *rtp.Packet) {
 									close(recv[ci])
 								}
 							}
@@ -375,11 +370,11 @@ func TestClientPublish(t *testing.T) {
 			u, err := url.Parse("http://localhost:9005/my/resource")
 			require.NoError(t, err)
 
-			var outgoingTracks []*webrtc.OutgoingTrack
+			var outboundTracks []*webrtc.OutboundTrack
 
 			switch ca {
 			case "audio":
-				outgoingTracks = []*webrtc.OutgoingTrack{{
+				outboundTracks = []*webrtc.OutboundTrack{{
 					Caps: pwebrtc.RTPCodecCapability{
 						MimeType:  "audio/opus",
 						ClockRate: 48000,
@@ -388,7 +383,7 @@ func TestClientPublish(t *testing.T) {
 				}}
 
 			case "video+audio":
-				outgoingTracks = []*webrtc.OutgoingTrack{
+				outboundTracks = []*webrtc.OutboundTrack{
 					{
 						Caps: pwebrtc.RTPCodecCapability{
 							MimeType:  "video/H264",
@@ -405,15 +400,15 @@ func TestClientPublish(t *testing.T) {
 				}
 			}
 
-			recv = make([]chan struct{}, len(outgoingTracks))
-			for i := range outgoingTracks {
+			recv = make([]chan struct{}, len(outboundTracks))
+			for i := range outboundTracks {
 				recv[i] = make(chan struct{})
 			}
 
 			cl := &Client{
 				URL:            u,
 				Publish:        true,
-				OutgoingTracks: outgoingTracks,
+				OutboundTracks: outboundTracks,
 				HTTPClient:     &http.Client{},
 				Log:            test.NilLogger,
 			}
@@ -421,7 +416,7 @@ func TestClientPublish(t *testing.T) {
 			require.NoError(t, err)
 			defer cl.Close() //nolint:errcheck
 
-			for _, track := range cl.OutgoingTracks {
+			for _, track := range cl.OutboundTracks {
 				err = track.WriteRTP(&rtp.Packet{
 					Header: rtp.Header{
 						Version:        2,
@@ -441,4 +436,184 @@ func TestClientPublish(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClientBearerToken(t *testing.T) {
+	pc := &webrtc.PeerConnection{
+		LocalRandomUDP:    true,
+		IPsFromInterfaces: true,
+		Log:               test.NilLogger,
+	}
+	err := pc.Start()
+	require.NoError(t, err)
+	defer pc.Close()
+
+	httpServ := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(t, "Bearer my_secret_token", r.Header.Get("Authorization"))
+
+			switch r.Method {
+			case http.MethodOptions:
+				w.WriteHeader(http.StatusNoContent)
+
+			case http.MethodPost:
+				body, err2 := io.ReadAll(r.Body)
+				require.NoError(t, err2)
+				offer := whipOffer(body)
+
+				answer, err2 := pc.CreateFullAnswer(offer, false)
+				require.NoError(t, err2)
+
+				w.Header().Set("Content-Type", "application/sdp")
+				w.Header().Set("ETag", "test_etag")
+				w.WriteHeader(http.StatusCreated)
+				w.Write([]byte(answer.SDP))
+			}
+		}),
+	}
+
+	ln, err := net.Listen("tcp", "localhost:9005")
+	require.NoError(t, err)
+
+	go httpServ.Serve(ln)
+	defer httpServ.Shutdown(context.Background())
+
+	u, err := url.Parse("http://localhost:9005/my/resource")
+	require.NoError(t, err)
+
+	outboundTracks := []*webrtc.OutboundTrack{{
+		Caps: pwebrtc.RTPCodecCapability{
+			MimeType:  "audio/opus",
+			ClockRate: 48000,
+			Channels:  2,
+		},
+	}}
+
+	cl := &Client{
+		URL:            u,
+		HTTPClient:     &http.Client{},
+		BearerToken:    "my_secret_token",
+		Log:            test.NilLogger,
+		Publish:        true,
+		OutboundTracks: outboundTracks,
+	}
+	err = cl.Initialize(context.Background())
+	require.NoError(t, err)
+	defer cl.Close() //nolint:errcheck
+}
+
+func TestClientNoTrickleICE(t *testing.T) {
+	pc := &webrtc.PeerConnection{
+		LocalRandomUDP:    true,
+		IPsFromInterfaces: true,
+		Log:               test.NilLogger,
+	}
+	err := pc.Start()
+	require.NoError(t, err)
+	defer pc.Close()
+
+	state := 0
+	recv := make(chan struct{})
+
+	httpServ := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch state {
+			case 0:
+				require.Equal(t, http.MethodOptions, r.Method)
+				require.Equal(t, "/my/resource", r.URL.Path)
+
+				w.Header().Set("Access-Control-Allow-Methods", "OPTIONS, GET, POST, DELETE")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+				w.WriteHeader(http.StatusNoContent)
+
+			case 1:
+				require.Equal(t, http.MethodPost, r.Method)
+				require.Equal(t, "/my/resource", r.URL.Path)
+				require.Equal(t, "application/sdp", r.Header.Get("Content-Type"))
+
+				body, err2 := io.ReadAll(r.Body)
+				require.NoError(t, err2)
+				offer := whipOffer(body)
+
+				require.Contains(t, offer.SDP, "a=candidate:")
+
+				answer, err2 := pc.CreateFullAnswer(offer, false)
+				require.NoError(t, err2)
+
+				w.Header().Set("Content-Type", "application/sdp")
+				w.Header().Set("Location", "/my/resource/sessionid")
+				w.WriteHeader(http.StatusCreated)
+				w.Write([]byte(answer.SDP))
+
+				go func() {
+					err3 := pc.WaitUntilConnected(10 * time.Second)
+					require.NoError(t, err3)
+
+					err3 = pc.GatherInboundTracks(2 * time.Second)
+					require.NoError(t, err3)
+
+					pc.InboundTracks()[0].OnPacketRTP = func(_ *rtp.Packet) {
+						close(recv)
+					}
+
+					pc.StartReading()
+				}()
+
+			default:
+				require.Equal(t, "/my/resource/sessionid", r.URL.Path)
+
+				switch r.Method {
+				case http.MethodDelete:
+					w.WriteHeader(http.StatusOK)
+
+				default:
+					t.Errorf("unexpected method: %s", r.Method)
+				}
+			}
+			state++
+		}),
+	}
+
+	ln, err := net.Listen("tcp", "localhost:9005")
+	require.NoError(t, err)
+
+	go httpServ.Serve(ln)
+	defer httpServ.Shutdown(context.Background())
+
+	u, err := url.Parse("http://localhost:9005/my/resource")
+	require.NoError(t, err)
+
+	outboundTracks := []*webrtc.OutboundTrack{{
+		Caps: pwebrtc.RTPCodecCapability{
+			MimeType:  "audio/opus",
+			ClockRate: 48000,
+			Channels:  2,
+		},
+	}}
+
+	cl := &Client{
+		URL:            u,
+		Publish:        true,
+		OutboundTracks: outboundTracks,
+		HTTPClient:     &http.Client{},
+		Log:            test.NilLogger,
+	}
+	err = cl.Initialize(context.Background())
+	require.NoError(t, err)
+	defer cl.Close() //nolint:errcheck
+
+	err = outboundTracks[0].WriteRTP(&rtp.Packet{
+		Header: rtp.Header{
+			Version:        2,
+			Marker:         true,
+			PayloadType:    111,
+			SequenceNumber: 1123,
+			Timestamp:      45343,
+			SSRC:           563424,
+		},
+		Payload: []byte{5, 2},
+	})
+	require.NoError(t, err)
+
+	<-recv
 }
