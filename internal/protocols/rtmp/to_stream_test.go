@@ -10,7 +10,7 @@ import (
 func TestToStreamNoSupportedCodecs(t *testing.T) {
 	r := &gortmplib.Reader{}
 
-	_, err := ToStream(r, nil)
+	_, _, err := ToStream(r, nil, 0)
 	require.Equal(t, errNoSupportedCodecsTo, err)
 }
 

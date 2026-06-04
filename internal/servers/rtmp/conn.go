@@ -29,6 +29,7 @@ type conn struct {
 	rtspAddress         string
 	readTimeout         conf.Duration
 	writeTimeout        conf.Duration
+	rtmpBufferTime      conf.Duration
 	runOnConnect        string
 	runOnConnectRestart bool
 	runOnDisconnect     string
@@ -241,10 +242,11 @@ func (c *conn) runPublish() error {
 
 	var subStream *stream.SubStream
 
-	medias, err := rtmp.ToStream(r, &subStream)
+	medias, buf, err := rtmp.ToStream(r, &subStream, time.Duration(c.rtmpBufferTime))
 	if err != nil {
 		return err
 	}
+	defer buf.Flush()
 
 	res, err := c.pathManager.AddPublisher(defs.PathAddPublisherReq{
 		Author:        c,

@@ -66,6 +66,7 @@ type Handler struct {
 	DumpPackets       bool
 	ReadTimeout       conf.Duration
 	WriteTimeout      conf.Duration
+	RTMPBufferTime    conf.Duration
 	WriteQueueSize    int
 	UDPReadBufferSize uint
 	RTPMaxPayloadSize int
@@ -113,10 +114,11 @@ func (s *Handler) Initialize() {
 	case strings.HasPrefix(s.Conf.Source, "rtmp://") ||
 		strings.HasPrefix(s.Conf.Source, "rtmps://"):
 		s.instance = &ssrtmp.Source{
-			DumpPackets:  s.DumpPackets,
-			ReadTimeout:  s.ReadTimeout,
-			WriteTimeout: s.WriteTimeout,
-			Parent:       s,
+			DumpPackets:    s.DumpPackets,
+			ReadTimeout:    s.ReadTimeout,
+			WriteTimeout:   s.WriteTimeout,
+			RTMPBufferTime: s.RTMPBufferTime,
+			Parent:         s,
 		}
 
 	case strings.HasPrefix(s.Conf.Source, "http://") ||

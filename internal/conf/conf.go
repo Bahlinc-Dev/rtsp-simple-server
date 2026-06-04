@@ -345,6 +345,7 @@ type Conf struct {
 	RTMPSAddress   string     `json:"rtmpsAddress"`
 	RTMPServerKey  string     `json:"rtmpServerKey"`
 	RTMPServerCert string     `json:"rtmpServerCert"`
+	RTMPBufferTime Duration   `json:"rtmpBufferTime"`
 
 	// HLS server
 	HLS                bool       `json:"hls"`
@@ -501,6 +502,7 @@ func (conf *Conf) setDefaults() {
 	conf.RTMPSAddress = ":1936"
 	conf.RTMPServerKey = "server.key"
 	conf.RTMPServerCert = "server.crt"
+	conf.RTMPBufferTime = 0
 
 	// HLS
 	conf.HLS = true

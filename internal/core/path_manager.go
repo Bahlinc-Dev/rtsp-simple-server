@@ -75,6 +75,7 @@ type pathManager struct {
 	dumpPackets       bool
 	readTimeout       conf.Duration
 	writeTimeout      conf.Duration
+	rtmpBufferTime    conf.Duration
 	writeQueueSize    int
 	udpReadBufferSize uint
 	rtpMaxPayloadSize int
@@ -465,6 +466,7 @@ func (pm *pathManager) createPath(
 		rtspAddress:       pm.rtspAddress,
 		readTimeout:       pm.readTimeout,
 		writeTimeout:      pm.writeTimeout,
+		rtmpBufferTime:    pm.rtmpBufferTime,
 		writeQueueSize:    pm.writeQueueSize,
 		udpReadBufferSize: pm.udpReadBufferSize,
 		rtpMaxPayloadSize: pm.rtpMaxPayloadSize,

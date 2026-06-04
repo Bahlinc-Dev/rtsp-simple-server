@@ -28,10 +28,11 @@ type parent interface {
 
 // Source is a RTMP static source.
 type Source struct {
-	DumpPackets  bool
-	ReadTimeout  conf.Duration
-	WriteTimeout conf.Duration
-	Parent       parent
+	DumpPackets    bool
+	ReadTimeout    conf.Duration
+	WriteTimeout   conf.Duration
+	RTMPBufferTime conf.Duration
+	Parent         parent
 }
 
 // Log implements logger.Writer.
@@ -121,10 +122,11 @@ func (s *Source) runReader(conn *gortmplib.Client) error {
 
 	var subStream *stream.SubStream
 
-	medias, err := rtmp.ToStream(r, &subStream)
+	medias, buf, err := rtmp.ToStream(r, &subStream, time.Duration(s.RTMPBufferTime))
 	if err != nil {
 		return err
 	}
+	defer buf.Flush()
 
 	if len(medias) == 0 {
 		return fmt.Errorf("no supported tracks found")

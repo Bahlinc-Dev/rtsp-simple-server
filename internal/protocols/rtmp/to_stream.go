@@ -34,10 +34,14 @@ func fourCCToString(c message.FourCC) string {
 }
 
 // ToStream maps a RTMP stream to a MediaMTX stream.
+// If bufferTime > 0, packets are held for that duration before being forwarded,
+// smoothing out delivery jitter. The returned Buffer must be Flush()'d on disconnect.
 func ToStream(
 	r *gortmplib.Reader,
 	subStream **stream.SubStream,
-) ([]*description.Media, error) {
+	bufferTime time.Duration,
+) ([]*description.Media, *Buffer, error) {
+	buf := NewBuffer(bufferTime, subStream)
 	var medias []*description.Media
 
 	for _, track := range r.Tracks() {
@@ -53,7 +57,7 @@ func ToStream(
 			medias = append(medias, medi)
 
 			r.OnDataAV1(track, func(pts time.Duration, tu [][]byte) {
-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
+				buf.Push(pts, medi, forma, &unit.Unit{
 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
 					Payload: unit.PayloadAV1(tu),
 				})
@@ -70,7 +74,7 @@ func ToStream(
 			medias = append(medias, medi)
 
 			r.OnDataVP9(track, func(pts time.Duration, frame []byte) {
-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
+				buf.Push(pts, medi, forma, &unit.Unit{
 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
 					Payload: unit.PayloadVP9(frame),
 				})
@@ -90,7 +94,7 @@ func ToStream(
 			medias = append(medias, medi)
 
 			r.OnDataH265(track, func(pts time.Duration, _ time.Duration, au [][]byte) {
-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
+				buf.Push(pts, medi, forma, &unit.Unit{
 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
 					Payload: unit.PayloadH265(au),
 				})
@@ -110,7 +114,7 @@ func ToStream(
 			medias = append(medias, medi)
 
 			r.OnDataH264(track, func(pts time.Duration, _ time.Duration, au [][]byte) {
-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
+				buf.Push(pts, medi, forma, &unit.Unit{
 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
 					Payload: unit.PayloadH264(au),
 				})
@@ -132,7 +136,7 @@ func ToStream(
 			medias = append(medias, medi)
 
 			r.OnDataOpus(track, func(pts time.Duration, packet []byte) {
-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
+				buf.Push(pts, medi, forma, &unit.Unit{
 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
 					Payload: unit.PayloadOpus{packet},
 				})
@@ -141,7 +145,7 @@ func ToStream(
 		case *codecs.FLAC:
 			enc, err := codec.StreamInfo.Marshal()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 
 			sampleRate := int(codec.StreamInfo.SampleRate)
@@ -160,7 +164,7 @@ func ToStream(
 			medias = append(medias, medi)
 
 			r.OnDataFLAC(track, func(pts time.Duration, frame []byte) {
-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
+				buf.Push(pts, medi, forma, &unit.Unit{
 					PTS:     durationToTimestamp(pts, sampleRate),
 					Payload: unit.PayloadFLAC(frame),
 				})
@@ -181,7 +185,7 @@ func ToStream(
 			medias = append(medias, medi)
 
 			r.OnDataMPEG4Audio(track, func(pts time.Duration, au []byte) {
-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
+				buf.Push(pts, medi, forma, &unit.Unit{
 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
 					Payload: unit.PayloadMPEG4Audio{au},
 				})
@@ -196,7 +200,7 @@ func ToStream(
 			medias = append(medias, medi)
 
 			r.OnDataMPEG1Audio(track, func(pts time.Duration, frame []byte) {
-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
+				buf.Push(pts, medi, forma, &unit.Unit{
 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
 					Payload: unit.PayloadMPEG1Audio{frame},
 				})
@@ -215,7 +219,7 @@ func ToStream(
 			medias = append(medias, medi)
 
 			r.OnDataAC3(track, func(pts time.Duration, frame []byte) {
-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
+				buf.Push(pts, medi, forma, &unit.Unit{
 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
 					Payload: unit.PayloadAC3{frame},
 				})
@@ -244,7 +248,7 @@ func ToStream(
 			medias = append(medias, medi)
 
 			r.OnDataG711(track, func(pts time.Duration, samples []byte) {
-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
+				buf.Push(pts, medi, forma, &unit.Unit{
 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
 					Payload: unit.PayloadG711(samples),
 				})
@@ -264,7 +268,7 @@ func ToStream(
 			medias = append(medias, medi)
 
 			r.OnDataLPCM(track, func(pts time.Duration, samples []byte) {
-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
+				buf.Push(pts, medi, forma, &unit.Unit{
 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
 					Payload: unit.PayloadLPCM(samples),
 				})
@@ -273,8 +277,8 @@ func ToStream(
 	}
 
 	if len(medias) == 0 {
-		return nil, errNoSupportedCodecsTo
+		return nil, nil, errNoSupportedCodecsTo
 	}
 
-	return medias, nil
+	return medias, buf, nil
 }

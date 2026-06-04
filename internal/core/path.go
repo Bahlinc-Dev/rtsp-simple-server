@@ -74,6 +74,7 @@ type path struct {
 	rtspAddress       string
 	readTimeout       conf.Duration
 	writeTimeout      conf.Duration
+	rtmpBufferTime    conf.Duration
 	writeQueueSize    int
 	udpReadBufferSize uint
 	rtpMaxPayloadSize int
@@ -197,6 +198,7 @@ func (pa *path) run() {
 			DumpPackets:       pa.dumpPackets,
 			ReadTimeout:       pa.readTimeout,
 			WriteTimeout:      pa.writeTimeout,
+			RTMPBufferTime:    pa.rtmpBufferTime,
 			WriteQueueSize:    pa.writeQueueSize,
 			UDPReadBufferSize: pa.udpReadBufferSize,
 			RTPMaxPayloadSize: pa.rtpMaxPayloadSize,
